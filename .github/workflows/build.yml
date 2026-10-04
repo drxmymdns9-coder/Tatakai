@@ -1,372 +1,70 @@
-name: Build and Release
+name: Build Tatakai iOS
 
 on:
-  push:
-    branches:
-      - 'main'
-    tags:
-      - 'v*'
   workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Publish to GitHub Release'
-        required: false
-        default: false
-        type: boolean
-
-permissions:
-  contents: write
-
-env:
-  NODE_VERSION: '22'
 
 jobs:
-  quality-gates:
-    runs-on: ubuntu-latest
+  build-ios:
+    name: Build iOS IPA
+    runs-on: macos-26
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+          node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
-        shell: bash
-        env:
-          PATH: /bin:/usr/bin:/usr/local/bin:$PATH
 
-      - name: Test
-        run: npm run test
-        # Non-blocking: the unit suite carries pre-existing drift (stale import
-        # paths after the desktop/runtime reorg, plus orphaned tests for modules
-        # that were removed — permission-guard, logLevel, extensionAnalytics, the
-        # extension/toko source tree). Keep it running and visible in CI, but don't
-        # gate the desktop build + release on it. Tracked for a separate repair pass.
-        continue-on-error: true
+      - name: Build web app
+        run: npm run build
 
-  # ──────────────────────────────────────────────────────
-  #  Desktop — electron-builder with auto-update manifests
-  #  Publishes latest.yml / latest-mac.yml / latest-linux.yml
-  #  which electron-updater reads to detect new versions
-  # ──────────────────────────────────────────────────────
-  build-desktop:
-    needs: [quality-gates]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: win
-          - os: macos-latest
-            platform: mac
-          - os: ubuntu-latest
-            platform: linux
+      - name: Install Capacitor iOS
+        run: npm install @capacitor/ios
 
-    runs-on: ${{ matrix.os }}
+      - name: Install Capacitor CLI
+        run: npm install @capacitor/cli
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Add iOS platform
+        run: npx cap add ios
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+      - name: Sync iOS
+        run: npx cap sync ios
 
-      - name: Install dependencies
-        run: npm ci
-        shell: bash
-        env:
-          PATH: /bin:/usr/bin:/usr/local/bin:$PATH
-
-      # Vite inlines import.meta.env.VITE_* at BUILD time. With no .env present on
-      # CI (it's gitignored), every VITE_* becomes '' in the bundle — and
-      # src/integrations/supabase/client.ts then hits a missing anon key, which
-      # black-screened the packaged renderer. The full client env lives in ONE repo
-      # secret, DESKTOP_DOTENV, holding the .env file contents; Vite auto-loads
-      # .env, so this reproduces a local `electron:build` 1:1. Passed via env: (not
-      # inlined into the shell) so a value with special chars can't break the step.
-      - name: Write build-time .env (client VITE_* vars)
-        shell: bash
-        env:
-          DESKTOP_DOTENV: ${{ secrets.DESKTOP_DOTENV }}
+      - name: Build unsigned iOS archive
         run: |
-          if [ -n "$DESKTOP_DOTENV" ]; then
-            printf '%s\n' "$DESKTOP_DOTENV" > .env
-            echo "Wrote .env for the Vite build ($(grep -c . .env) non-empty lines)."
-          else
-            echo "::warning::DESKTOP_DOTENV secret is empty — VITE_* will be blank in this build; the packaged app will show a configuration-error screen instead of connecting to the backend."
-          fi
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/Tatakai.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive
 
-      # ELECTRON_BUILD=true makes vite emit base:'./' so assets resolve under
-      # file:// in the packaged app (without it, base is '/' and the packaged
-      # renderer loads a blank page).
-      - name: Build Vite app
-        run: npx cross-env NODE_ENV=production ELECTRON_BUILD=true vite build
-        env:
-          # Headroom for the minify pass, which OOMs the default heap on large bundles.
-          NODE_OPTIONS: --max-old-space-size=8192
-
-      # Render the Tatakai-branded NSIS installer graphics (Windows installer UI)
-      # from brand tokens with sharp (already a dep) → build/*.bmp. Referenced by
-      # the nsis block in package.json; generated here so the binary BMPs stay out
-      # of git and the installer art is reproducible. Harmless/unused on mac+linux.
-      - name: Generate installer assets
-        run: node scripts/generate-installer-assets.cjs
-
-      # Bundle the per-platform `cloudflared` binary for host-hosted watch-party
-      # tunnels. Downloaded here (not committed) so ~50MB binaries stay out of
-      # git; electron-builder ships it via extraResources (from resources/bin).
-      - name: Download cloudflared (watch-party tunnel binary)
-        shell: bash
+      - name: Create unsigned IPA
         run: |
-          set -e
-          mkdir -p resources/bin
-          BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
-          case "${{ matrix.platform }}" in
-            win)
-              curl -fL "$BASE/cloudflared-windows-amd64.exe" -o resources/bin/cloudflared.exe
-              ;;
-            linux)
-              curl -fL "$BASE/cloudflared-linux-amd64" -o resources/bin/cloudflared
-              chmod +x resources/bin/cloudflared
-              ;;
-            mac)
-              ARCH=$(uname -m)
-              if [ "$ARCH" = "arm64" ]; then A=arm64; else A=amd64; fi
-              curl -fL "$BASE/cloudflared-darwin-${A}.tgz" -o /tmp/cloudflared.tgz
-              tar -xzf /tmp/cloudflared.tgz -C resources/bin
-              chmod +x resources/bin/cloudflared
-              ;;
-          esac
-          ls -la resources/bin
+          mkdir -p "$RUNNER_TEMP/Payload"
 
-      # Tag push → publish to GitHub Release (creates latest.yml for electron-updater)
-      # workflow_dispatch with publish → also publish
-      # Otherwise → local build only
-      - name: Build Electron
-        run: npx electron-builder --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Ship unsigned for now: never auto-discover a macOS signing identity.
-          # Signing/notarization activate when CSC_LINK / APPLE_* secrets are set
-          # and this is removed — see docs/DESKTOP_SIGNING.md.
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          cp -R \
+            "$RUNNER_TEMP/Tatakai.xcarchive/Products/Applications/App.app" \
+            "$RUNNER_TEMP/Payload/Tatakai.app"
 
-      - name: Debug — list `dist_electron` contents
-        shell: bash
-        run: |
-          echo "=== dist_electron contents ==="
-          ls -la dist_electron || echo "dist_electron directory not found"
+          cd "$RUNNER_TEMP"
 
-      - name: Validate desktop artifacts exist
-        shell: bash
-        run: |
-          set -e
-          matches=$(ls dist_electron/*.{exe,dmg,zip,AppImage,deb,yml,blockmap} 2>/dev/null || true)
-          if [ -z "$matches" ]; then
-            echo "No desktop artifacts were produced. Failing to surface the problem."
-            ls -la dist_electron || true
-            exit 1
-          fi
+          zip -r \
+            "$RUNNER_TEMP/Tatakai-unsigned.ipa" \
+            Payload
 
-      - name: Upload artifacts
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: tatakai-${{ matrix.platform }}
-          path: |
-            dist_electron/*.exe
-            dist_electron/*.dmg
-            dist_electron/*.zip
-            dist_electron/*.AppImage
-            dist_electron/*.deb
-            dist_electron/*.yml
-            dist_electron/*.blockmap
-          if-no-files-found: warn
-          retention-days: 30
-
-  # ──────────────────────────────────────────────────────
-  #  Android — Capacitor APK
-  # ──────────────────────────────────────────────────────
-  # Strategy note: Android CI remains intentionally disabled in this workflow.
-  # Desktop releases are automated here; Android is currently a manual track
-  # until signing secrets and release cadence are finalized.
-  # build-android:
-  #   runs-on: ubuntu-latest
-  #   env:
-  #     ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
-
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
-
-  #     - name: Setup Node.js
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: ${{ env.NODE_VERSION }}
-  #         cache: 'npm'
-
-  #     - name: Setup Java
-  #       uses: actions/setup-java@v4
-  #       with:
-  #         distribution: 'temurin'
-  #         java-version: '17'
-
-  #     - name: Java debug
-  #       run: |
-  #         echo "JAVA_HOME=$JAVA_HOME"
-  #         java -version || true
-
-  #     - name: Setup Android SDK
-  #       uses: android-actions/setup-android@v3
-
-  #     - name: Install dependencies
-  #       run: npm ci
-  #       shell: bash
-  #       env:
-  #         PATH: /bin:/usr/bin:/usr/local/bin:$PATH
-
-  #     - name: Build web app
-  #       run: npx cross-env NODE_ENV=production vite build
-
-  #     - name: Sync Capacitor
-  #       run: npx cap sync android
-  #       env:
-  #         JAVA_HOME: ${{ env.JAVA_HOME }}
-  #         PATH: ${{ env.JAVA_HOME }}/bin:$PATH
-
-  #     - name: Build unsigned APK
-  #       run: cd android && chmod +x gradlew && ./gradlew assembleRelease
-  #       env:
-  #         JAVA_HOME: ${{ env.JAVA_HOME }}
-  #         PATH: ${{ env.JAVA_HOME }}/bin:$PATH
-
-  #     - name: Rename APK with version
-  #       run: |
-  #         VERSION=$(node -p "require('./package.json').version")
-  #         APK_DIR="android/app/build/outputs/apk/release"
-  #         for f in "$APK_DIR"/*.apk; do
-  #           mv "$f" "$APK_DIR/Tatakai-${VERSION}-android.apk"
-  #         done
-
-  #     - name: Debug — list APK output folder
-  #       shell: bash
-  #       run: |
-  #         echo "=== android APK output ==="
-  #         ls -la android/app/build/outputs/apk/release || echo "APK output folder not present"
-
-  #     - name: Validate APK artifact exists
-  #       shell: bash
-  #       run: |
-  #         set -e
-  #         shopt -s nullglob || true
-  #         apks=(android/app/build/outputs/apk/release/*.apk)
-  #         if [ "${#apks[@]}" -eq 0 ]; then
-  #           echo "No APKs found in android/app/build/outputs/apk/release — failing to surface issue"
-  #           ls -la android/app/build/outputs/apk/release || true
-  #           exit 1
-  #         fi
-
-  #     - name: Decode keystore
-  #       if: ${{ env.ANDROID_KEYSTORE != '' }}
-  #       run: echo "$ANDROID_KEYSTORE" | base64 -d > android/app/release.keystore
-  #       env:
-  #         ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
-
-  #     - name: Build signed APK
-  #       if: ${{ env.ANDROID_KEYSTORE != '' }}
-  #       run: |
-  #         cd android && ./gradlew assembleRelease \
-  #           -Pandroid.injected.signing.store.file=${{ github.workspace }}/android/app/release.keystore \
-  #           -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
-  #           -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
-  #           -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
-  #       env:
-  #         JAVA_HOME: ${{ env.JAVA_HOME }}
-  #         PATH: ${{ env.JAVA_HOME }}/bin:$PATH
-
-  #     - name: Upload APK
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: tatakai-android
-  #         path: android/app/build/outputs/apk/release/*.apk
-  #         if-no-files-found: warn
-  #         retention-days: 30
-
-  # ──────────────────────────────────────────────────────
-  #  Finalize Release — mark non-draft and attach desktop artifacts
-  #  electron-builder created the draft release and uploaded
-  #  desktop installers + latest*.yml manifests
-  # ──────────────────────────────────────────────────────
-  release:
-    needs: [build-desktop]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-
-    steps:
-      - name: Download desktop artifacts — Windows
-        uses: actions/download-artifact@v4
-        with:
-          name: tatakai-win
-          path: desktop-artifacts/windows
-          if-no-files-found: warn
-
-      - name: Download desktop artifacts — macOS
-        uses: actions/download-artifact@v4
-        with:
-          name: tatakai-mac
-          path: desktop-artifacts/macos
-          if-no-files-found: warn
-
-      - name: Download desktop artifacts — Linux
-        uses: actions/download-artifact@v4
-        with:
-          name: tatakai-linux
-          path: desktop-artifacts/linux
-          if-no-files-found: warn
-
-      - name: Upload all artifacts to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            desktop-artifacts/windows/*.exe
-            desktop-artifacts/windows/*.exe.blockmap
-            desktop-artifacts/windows/*.zip
-            desktop-artifacts/windows/latest.yml
-            desktop-artifacts/macos/*.dmg
-            desktop-artifacts/macos/*.dmg.blockmap
-            desktop-artifacts/macos/*.zip
-            desktop-artifacts/macos/*.zip.blockmap
-            desktop-artifacts/macos/latest-mac.yml
-            desktop-artifacts/linux/*.AppImage
-            desktop-artifacts/linux/*.deb
-            desktop-artifacts/linux/latest-linux.yml
-          draft: false
-          prerelease: false
-          append_body: true
-          body: |
-            ## Downloads
-
-            ### Desktop (auto-updates enabled)
-            | Platform | Installer | Portable |
-            |----------|-----------|----------|
-            | Windows  | `.exe`    | `.zip`   |
-            | macOS    | `.dmg`    | `.zip`   |
-            | Linux    | `.AppImage` | `.deb` |
-
-            > Desktop apps update automatically via electron-updater.
-            > Each device is identified by a unique Client ID (CID) sent with update checks.
-
-            ### Web
-            - Visit [tatakai.me](https://tatakai.me)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: Tatakai-iOS-IPA
+          path: ${{ runner.temp }}/Tatakai-unsigned.ipa
+          retention-days: 7
