@@ -128,7 +128,7 @@ Follow people, discuss every episode, curate playlists, and sync with MyAnimeLis
 
 - Features  
 - Quick Start  
-- Platforms (Web / Desktop / Android)  
+- Platforms (Web / Desktop / Android / iOS)
 - Configuration & Secrets  
 - Development & Testing  
 - CI / Release Process  
@@ -219,6 +219,19 @@ Follow people, discuss every episode, curate playlists, and sync with MyAnimeLis
 ## Upcoming Features
 
 - Mobile apps (iOS and Android) [High Priority]  
+
+## iOS build
+
+The repository now includes a Capacitor iOS project under `ios/App`. Build and open it on macOS with:
+
+```bash
+npm install
+npm run mobile:ios:open
+```
+
+See [`docs/IOS.md`](docs/IOS.md) for Xcode signing, simulator/device testing, and release archive steps. The iOS shell is generated and synced from the existing React/Vite application; no separate UI rewrite is required.
+
+Every push to `main`/`master` and every pull request also runs [the iOS GitHub Actions workflow](.github/workflows/build.yml), which builds an unsigned IPA artifact on macOS. Signing for TestFlight/App Store distribution requires Apple credentials and provisioning secrets.
 
 ---
 

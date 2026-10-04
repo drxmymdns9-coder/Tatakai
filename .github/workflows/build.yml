@@ -1,18 +1,28 @@
 name: Build Tatakai iOS
 
 on:
+  push:
+    branches: [main, master]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-ios:
-    name: Build iOS IPA
-    runs-on: macos-26
+    name: Build unsigned iOS archive
+    runs-on: macos-15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -21,50 +31,40 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build web app
+      - name: Build web application
         run: npm run build
 
-      - name: Install Capacitor iOS
-        run: npm install @capacitor/ios
-
-      - name: Install Capacitor CLI
-        run: npm install @capacitor/cli
-
-      - name: Add iOS platform
-        run: npx cap add ios
-
-      - name: Sync iOS
+      - name: Sync Capacitor iOS project
         run: npx cap sync ios
+
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project ios/App/App.xcodeproj -scheme App
 
       - name: Build unsigned iOS archive
         run: |
           xcodebuild \
-            -workspace ios/App/App.xcworkspace \
+            -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Tatakai.xcarchive" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             archive
 
-      - name: Create unsigned IPA
+      - name: Package unsigned IPA
         run: |
           mkdir -p "$RUNNER_TEMP/Payload"
-
-          cp -R \
-            "$RUNNER_TEMP/Tatakai.xcarchive/Products/Applications/App.app" \
+          cp -R "$RUNNER_TEMP/Tatakai.xcarchive/Products/Applications/App.app" \
             "$RUNNER_TEMP/Payload/Tatakai.app"
-
           cd "$RUNNER_TEMP"
+          zip -qr "$RUNNER_TEMP/Tatakai-iOS-unsigned.ipa" Payload
 
-          zip -r \
-            "$RUNNER_TEMP/Tatakai-unsigned.ipa" \
-            Payload
-
-      - name: Upload IPA
+      - name: Upload iOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Tatakai-iOS-IPA
-          path: ${{ runner.temp }}/Tatakai-unsigned.ipa
+          name: Tatakai-iOS-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/Tatakai-iOS-unsigned.ipa
+          if-no-files-found: error
           retention-days: 7

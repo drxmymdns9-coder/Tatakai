@@ -33,6 +33,8 @@
     "assets:generate": "node scripts/generate-assets.cjs",
     "mobile:dev": "npm run build && npx cap open android",
     "mobile:sync": "npm run build && npx cap sync",
+    "mobile:ios:sync": "npm run build && npx cap sync ios",
+    "mobile:ios:open": "npm run mobile:ios:sync && npx cap open ios",
     "mobile:build": "npx cap sync android && cd android && gradlew assembleRelease",
     "build:toko": "npm --prefix extension/toko run build",
     "api": "npm run build:toko && npm --prefix TatakaiAPI start",
