@@ -233,6 +233,8 @@ See [`docs/IOS.md`](docs/IOS.md) for Xcode signing, simulator/device testing, an
 
 Every push to `main`/`master` and every pull request also runs [the iOS GitHub Actions workflow](.github/workflows/build.yml), which builds an unsigned IPA artifact on macOS. Signing for TestFlight/App Store distribution requires Apple credentials and provisioning secrets.
 
+For a private replacement backend, follow [`docs/SELF_HOSTED_BACKEND.md`](docs/SELF_HOSTED_BACKEND.md) to create a new Supabase project, apply the migrations, and provide the build secrets.
+
 ---
 
 ## API
