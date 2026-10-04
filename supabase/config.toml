@@ -1,6 +1,5 @@
-# Set this to your own Supabase project ref for local CLI work.
-# GitHub Actions uses SUPABASE_PROJECT_REF instead of this value.
-project_id = "replace-with-your-project-ref"
+# Self-hosted Tatakai project created for this fork.
+project_id = "fblbzmvrygbtdvhshmzl"
 
 [functions.external-auth]
 verify_jwt = false

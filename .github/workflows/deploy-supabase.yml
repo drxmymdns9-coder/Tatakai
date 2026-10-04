@@ -33,6 +33,12 @@ jobs:
       - name: Link the new project
         run: supabase link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
 
+      - name: Exclude original-project data wipe migration
+        run: |
+          mv supabase/migrations/20260928000000_wipe_community_content.sql \
+            "$RUNNER_TEMP/20260928000000_wipe_community_content.sql"
+          trap 'mv "$RUNNER_TEMP/20260928000000_wipe_community_content.sql" supabase/migrations/' EXIT
+
       - name: Apply all migrations
         run: supabase db push --linked --include-all
 
